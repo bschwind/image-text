@@ -1,0 +1,12 @@
+[package]
+name = "image-text"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cosmic-text = "0.12"
+fontdb = "0.16"
+image = "0.25"
+num-traits = "0.2"
+sys-locale = "0.3"
+thiserror = "1"
