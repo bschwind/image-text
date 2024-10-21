@@ -2,14 +2,13 @@ use cosmic_text::{
     Align, Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight,
 };
 use fontdb::Family;
-use image::{imageops::overlay_bounds, GenericImage, Pixel};
-use num_traits::NumCast;
+use image::{GenericImage, ImageBuffer, Luma, Rgba};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {}
 
-pub fn draw_text<I: GenericImage>(image: &mut I, text_block: TextBlock) {
+pub fn draw_text<I: GenericImage<Pixel = Rgba<u8>>>(image: &mut I, text_block: TextBlock) {
     let mut text_painter = TextPainter::new();
     text_painter.paint_text_block(image, text_block);
 }
@@ -42,7 +41,11 @@ impl TextPainter {
         Self { font_system, swash_cache }
     }
 
-    pub fn paint_text_block<I: GenericImage>(&mut self, image: &mut I, text_block: TextBlock) {
+    pub fn paint_text_block<I: GenericImage<Pixel = Rgba<u8>>>(
+        &mut self,
+        image: &mut I,
+        text_block: TextBlock,
+    ) {
         let (surface_width, surface_height) = image.dimensions();
 
         let buffer = {
@@ -102,7 +105,13 @@ impl TextPainter {
         self.add_text(image, x, y, &buffer);
     }
 
-    fn add_text<I: GenericImage>(&mut self, image: &mut I, x: f32, y: f32, buffer: &Buffer) {
+    fn add_text<I: GenericImage<Pixel = Rgba<u8>>>(
+        &mut self,
+        image: &mut I,
+        x: f32,
+        y: f32,
+        buffer: &Buffer,
+    ) {
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
                 let scale = 1.0;
@@ -121,42 +130,43 @@ impl TextPainter {
                 let glyph_width = glyph_image.placement.width;
                 let glyph_height = glyph_image.placement.height;
 
-                let (bounds_x, bounds_y) = overlay_bounds(
-                    image.dimensions(),
-                    (glyph_width, glyph_height),
-                    glyph_x as u32,
-                    glyph_y as u32,
-                );
+                match glyph_image.content {
+                    SwashContent::Mask | SwashContent::SubpixelMask => {
+                        // Grayscale
+                        let glyph_luma_image: ImageBuffer<Luma<u8>, &[u8]> =
+                            ImageBuffer::from_raw(glyph_width, glyph_height, &glyph_image.data[..])
+                                .unwrap();
 
-                for y in 0..bounds_y {
-                    for x in 0..bounds_x {
-                        let glyph_alpha = glyph_image.data[(y * glyph_width + x) as usize];
+                        let (r, g, b, _a) = glyph
+                            .color_opt
+                            .map(|c| c.as_rgba_tuple())
+                            .unwrap_or((255, 255, 255, 255));
 
-                        let mut bottom_pixel =
-                            image.get_pixel(glyph_x as u32 + x, glyph_y as u32 + y);
+                        let glyph_rgba_image: ImageBuffer<Rgba<u8>, Vec<u8>> =
+                            ImageBuffer::from_fn(glyph_width, glyph_height, |x, y| {
+                                let glyph_alpha = glyph_luma_image.get_pixel(x, y)[0];
+                                Rgba([r, g, b, glyph_alpha])
+                            });
 
-                        let top_pixel = bottom_pixel.map_with_alpha(
-                            |_b| {
-                                match glyph_image.content {
-                                    SwashContent::Mask | SwashContent::SubpixelMask => {
-                                        // Grayscale
-                                        NumCast::from(255).unwrap()
-                                    },
-                                    SwashContent::Color => {
-                                        // Color
-                                        // TODO(bschwind) - How do we copy the RGBA values
-                                        //                  from a color glyph here?
-                                        NumCast::from(255).unwrap()
-                                    },
-                                }
-                            },
-                            |_alpha| NumCast::from(glyph_alpha).unwrap(),
+                        image::imageops::overlay(
+                            image,
+                            &glyph_rgba_image,
+                            glyph_x as i64,
+                            glyph_y as i64,
                         );
-
-                        bottom_pixel.blend(&top_pixel);
-
-                        image.put_pixel(glyph_x as u32 + x, glyph_y as u32 + y, bottom_pixel);
-                    }
+                    },
+                    SwashContent::Color => {
+                        // Color
+                        let glyph_rgba_image: ImageBuffer<Rgba<u8>, &[u8]> =
+                            ImageBuffer::from_raw(glyph_width, glyph_height, &glyph_image.data[..])
+                                .unwrap();
+                        image::imageops::overlay(
+                            image,
+                            &glyph_rgba_image,
+                            glyph_x as i64,
+                            glyph_y as i64,
+                        );
+                    },
                 }
             }
         }
